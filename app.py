@@ -49,10 +49,7 @@ lon = round(st.session_state.get("auto_lon", -103.62), 2)
 def get_weather(latitude, longitude):
     try:
         w = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto").json()
-        return {"wind_speed": w["current"]["wind_speed_10m"],
-                "wind_dir": w["current"]["wind_direction_10m"],
-                "sunrise": w["daily"]["sunrise"][0].split("T")[1],
-                "sunset": w["daily"]["sunset"][0].split("T")[1]}
+        return {"wind_speed": w["current"]["wind_speed_10m"], "wind_dir": w["current"]["wind_direction_10m"], "sunrise": w["daily"]["sunrise"][0].split("T")[1], "sunset": w["daily"]["sunset"][0].split("T")[1]}
     except:
         st.warning("Weather API unavailable — demo data")
         return {"wind_speed": 12, "wind_dir": 180, "sunrise": "06:30", "sunset": "19:45"}
@@ -60,8 +57,6 @@ def get_weather(latitude, longitude):
 weather = get_weather(lat, lon)
 wind_speed = weather["wind_speed"]
 wind_dir = weather["wind_dir"]
-sunrise = weather["sunrise"]
-sunset = weather["sunset"]
 
 # ========================= SIDEBAR =========================
 with st.sidebar:
@@ -134,7 +129,7 @@ with st.sidebar:
         st.success(f"✅ {user_name} logged {mode} at {location}!")
 
 # ========================= TABS =========================
-tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Map", "📊 Tracker", "📤 PDF", "🧠 AI Map"])
+tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Map","📊 Tracker","📤 PDF","🧠 AI Map"])
 
 with tab4:
     st.subheader("🧠 AI Probability Map + Satellite Habitat")
@@ -209,26 +204,3 @@ with tab4:
 
             # GPX export
             gpx = gpxpy.gpx.GPX()
-            wp = gpxpy.gpx.GPXWaypoint(best_pt[0], best_pt[1], name="AI Start")
-            gpx.waypoints.append(wp)
-            st.download_button("📥 Export AI Start Point (GPX)", data=gpx.to_xml(), file_name="AI_Start.gpx", mime="application/gpx+xml")
-
-            # KML export
-            kml = simplekml.Kml()
-            for i, (fl, flon, fw) in enumerate(sorted(flush_points, key=lambda x: x[2], reverse=True)[:5]):
-                kml.newpoint(name=f"Cluster {i+1}", coords=[(flon, fl)])
-            st.download_button("📥 Export Heatmap as KML for onX", data=kml.kml().encode('utf-8'), file_name="AI_Heatmap.kml", mime="application/vnd.google-earth.kml+xml")
-
-            # Shareable link + QR
-            if st.button("🔗 Generate Shareable Team Link"):
-                share_url = f"https://your-app-url.streamlit.app/?lat={center_lat}&lon={center_lon}&mode={mode}"
-                st.code(share_url)
-                buf = BytesIO()
-                qrcode.make(share_url).save(buf, format="PNG")
-                st.image(buf.getvalue(), caption="Scan to share with team")
-        else:
-            st.info("No flush points found. Add GPX waypoints named 'Flush', 'Bird', or 'Rooster'.")
-    else:
-        st.info("Import a GPX with flush waypoints to activate AI map.")
-
-st.caption("Built as perfect onX companion • Team mode + multi-species + AI alerts • Full route GPX + KML + QR sharing • Ready for monetization")
