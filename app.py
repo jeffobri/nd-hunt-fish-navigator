@@ -188,8 +188,105 @@ with tab4:
         st.session_state.current_route = [(46.37, -102.32), (46.38, -102.31), (46.36, -102.33)]
         st.success("✅ 40 realistic Mott, ND demo points loaded! Scroll down to see the full AI map with heatmap.")
 
-    # (The rest of the AI map logic, markers, strategy, exports, etc. — same as the working version)
+    flush_points = []
 
-    # ... [full AI map code continues exactly as in the previous working version]
+    if "waypoints" in st.session_state and st.session_state.waypoints:
+        route_points = st.session_state.get("current_route", [])
+        if route_points:
+            center_lat = sum(p[0] for p in route_points) / len(route_points)
+            center_lon = sum(p[1] for p in route_points) / len(route_points)
+        elif st.session_state.waypoints:
+            center_lat = sum(w[0] for w in st.session_state.waypoints) / len(st.session_state.waypoints)
+            center_lon = sum(w[1] for w in st.session_state.waypoints) / len(st.session_state.waypoints)
+        else:
+            center_lat, center_lon = lat, lon
+
+        today = datetime.now().date()
+        radius_miles = cluster_radius / 1760.0
+
+        keywords = ["flush", "bird", "rooster", "buck", "deer", "duck"] if mode == "Hunting" else ["bite", "fish", "walleye", "catch", "spot"]
+
+        for lat_w, lon_w, name, date_w in st.session_state.waypoints:
+            days_old = (today - datetime.strptime(date_w, "%Y-%m-%d").date()).days
+            if days_old > (weeks_filter * 7): continue
+            if any(k in (name or "").lower() for k in keywords):
+                decay = math.exp(-days_old / decay_rate)
+                hist_row = st.session_state.logs[st.session_state.logs["Date"] == date_w]
+                wind_sim = 1.0 if not hist_row.empty and abs(wind_speed - hist_row["Wind Speed"].iloc[0]) <= 5 else 0.3
+                cluster_weight = 1.0
+                for ex in flush_points:
+                    if haversine_distance(lat_w, lon_w, ex[0], ex[1]) < radius_miles:
+                        cluster_weight += 0.6
+                habitat_weight = 1.3
+                final_w = decay * wind_sim * cluster_weight * habitat_weight
+
+                offset_dist = 0.12
+                downwind_dir = (wind_dir + 180) % 360
+                offset_lat = lat_w + math.cos(math.radians(downwind_dir)) * (offset_dist / 69)
+                offset_lon = lon_w + math.sin(math.radians(downwind_dir)) * (offset_dist / (69 * math.cos(math.radians(lat_w))))
+                flush_points.append([lat_w, lon_w, final_w])
+                flush_points.append([offset_lat, offset_lon, final_w * 0.7])
+
+        if flush_points:
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
+            folium.TileLayer(tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr="Esri").add_to(m)
+            HeatMap(flush_points, radius=30, blur=20, max_zoom=12).add_to(m)
+            folium.PolyLine(route_points, color="orange", weight=6).add_to(m)
+
+            sorted_points = sorted(flush_points, key=lambda x: x[2], reverse=True)[:4]
+            best_pt = sorted_points[0]
+            folium.Marker([best_pt[0], best_pt[1]], popup="Start Here - Highest Probability", icon=folium.Icon(color="green", icon="star")).add_to(m)
+            for i, (fl, flon, fw) in enumerate(sorted_points[1:], 2):
+                folium.Marker([fl, flon], popup=f"Cluster {i} - High Probability", icon=folium.Icon(color="red", icon="info-sign")).add_to(m)
+
+            folium_static(m, width=700, height=450)
+
+            # IDW probability
+            s_sum = 0.0
+            w_sum = 0.0
+            for f_lat, f_lon, w in flush_points:
+                d = haversine_distance(center_lat, center_lon, f_lat, f_lon)
+                d = max(d, 0.001)
+                s_sum += w / (d ** 2)
+                w_sum += w
+            prob_score = min(100, int((s_sum / w_sum) * 100)) if w_sum > 0 else 0
+            st.metric("Route Probability Score", f"{prob_score}%")
+
+            # Metrics
+            total_flushes = pd.to_numeric(st.session_state.logs["Birds Flushed"], errors='coerce').sum()
+            total_miles = pd.to_numeric(st.session_state.logs["Miles Walked"], errors='coerce').sum()
+            total_shots = pd.to_numeric(st.session_state.logs["Shots Fired"], errors='coerce').sum()
+            total_harvest = pd.to_numeric(st.session_state.logs["Harvest/Catch"], errors='coerce').sum()
+            total_dog_points = pd.to_numeric(st.session_state.logs["Dog Points"], errors='coerce').sum()
+            dog_perf = round(total_dog_points / total_flushes, 1) if total_flushes > 0 else 0
+            accuracy = round((total_harvest / total_shots) * 100) if total_shots > 0 else 0
+
+            if total_flushes > 0 and mode == "Hunting":
+                minutes_per_flush = round((total_miles / 2.0 * 60) / total_flushes)
+                encounter_text = f"Expected encounter rate: 1 bird every {minutes_per_flush} minutes. Shooting Accuracy: {accuracy}%. Dog Avg: {dog_perf} pts/flush."
+            elif mode == "Fishing":
+                encounter_text = "Focus on highest structural clusters for best bite rate."
+            else:
+                encounter_text = "Not enough data yet."
+
+            st.subheader("🎯 AI Hunt Strategy")
+            st.success(encounter_text)
+
+            # Exports
+            gpx = gpxpy.gpx.GPX()
+            for i, (fl, flon, fw) in enumerate(sorted_points):
+                gpx.waypoints.append(gpxpy.gpx.GPXWaypoint(fl, flon, name=f"AI Target {i+1} {'(Start Here)' if i==0 else ''}"))
+            st.download_button("📥 Export Full AI Route to onX (GPX)", data=gpx.to_xml(), file_name="AI_Full_Hunt_Route.gpx", mime="application/gpx+xml")
+
+            kml = simplekml.Kml()
+            for i, (fl, flon, fw) in enumerate(sorted_points):
+                kml.newpoint(name=f"Cluster {i+1}", coords=[(flon, fl)])
+            st.download_button("📥 Export Heatmap as KML for onX", data=kml.kml().encode('utf-8'), file_name="AI_Heatmap.kml", mime="application/vnd.google-earth.kml+xml")
+
+        else:
+            st.info("Click the demo button above to see the AI map.")
+
+    else:
+        st.info("Click the demo button above to activate the AI map.")
 
 st.caption("Built as perfect onX companion • Team mode + multi-species + AI alerts • Full route GPX + KML + QR sharing • Ready for monetization")
